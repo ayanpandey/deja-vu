@@ -17,15 +17,18 @@ import (
 
 var recallFlags = []string{"--project", "--harness", "--limit", "--offset"}
 
-// runRecall prints what the MCP recall tool answers: the framed page, budgeted
-// the same way, this project first. `deja search --json` was the only answer
-// an agent could ask for on the command line, and it ran to 1-2 MB, which a
-// harness truncates to nothing; a skill that drives deja through the shell had
-// nothing it could read (#4781).
-func runRecall(dir string, args []string, stdout io.Writer) error {
+// recallOptions is what `deja recall` was asked.
+type recallOptions struct {
+	q                string
+	limit, offset    int
+	project, harness string
+}
+
+// parseRecallArgs reads the `deja recall` arguments.
+func parseRecallArgs(args []string) (recallOptions, error) {
 	limit, offset := 0, 0
 	project, harness := "", ""
-	var terms []string
+	var terms, rest []string
 	value := func(i int, flag string) (string, error) {
 		if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 			return "", fmt.Errorf("recall: %s needs a value", flag)
@@ -33,11 +36,17 @@ func runRecall(dir string, args []string, stdout io.Writer) error {
 		return args[i+1], nil
 	}
 	// --flag=value splits into the two-argument form, and after -- every
-	// word is the query, so a query may start with a dash.
+	// word is the query, so a query may start with a dash. Those words join
+	// the query after the ones typed before --, so `recall foo -- --bar`
+	// asks for "foo --bar", not "--bar foo".
 	var norm []string
 	for i, a := range args {
 		if a == "--" {
-			terms = append(terms, args[i+1:]...)
+			for _, w := range args[i+1:] {
+				if strings.TrimSpace(w) != "" {
+					rest = append(rest, w)
+				}
+			}
 			break
 		}
 		if k, v, ok := strings.Cut(a, "="); ok && strings.HasPrefix(k, "--") {
@@ -52,11 +61,11 @@ func runRecall(dir string, args []string, stdout io.Writer) error {
 		case "--limit":
 			v, err := value(i, a)
 			if err != nil {
-				return err
+				return recallOptions{}, err
 			}
 			n, err := strconv.Atoi(v)
 			if err != nil || n <= 0 {
-				return fmt.Errorf("recall: --limit wants a positive number, got %q", v)
+				return recallOptions{}, fmt.Errorf("recall: --limit wants a positive number, got %q", v)
 			}
 			limit, i = n, i+1
 		case "--offset":
@@ -64,36 +73,52 @@ func runRecall(dir string, args []string, stdout io.Writer) error {
 			// serves this page needs a way to ask for it.
 			v, err := value(i, a)
 			if err != nil {
-				return err
+				return recallOptions{}, err
 			}
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 0 {
-				return fmt.Errorf("recall: --offset wants a number from 0 up, got %q", v)
+				return recallOptions{}, fmt.Errorf("recall: --offset wants a number from 0 up, got %q", v)
 			}
 			offset, i = n, i+1
 		case "--project":
 			v, err := value(i, a)
 			if err != nil {
-				return err
+				return recallOptions{}, err
 			}
 			project, i = v, i+1
 		case "--harness":
 			v, err := value(i, a)
 			if err != nil {
-				return err
+				return recallOptions{}, err
 			}
 			harness, i = v, i+1
 		default:
-			if strings.HasPrefix(a, "--") {
-				return unknownFlag("recall", a, recallFlags)
+			// A single dash is a flag too: `recall -n 5 foo` searched for
+			// "-n 5 foo". A query that starts with a dash goes after --.
+			if strings.HasPrefix(a, "-") && a != "-" {
+				return recallOptions{}, unknownFlag("recall", a, recallFlags)
 			}
 			terms = append(terms, a)
 		}
 	}
-	q := strings.TrimSpace(strings.Join(terms, " "))
+	q := strings.TrimSpace(strings.Join(append(terms, rest...), " "))
 	if q == "" {
-		return errors.New("recall: what to recall? deja recall <words>")
+		return recallOptions{}, errors.New("recall: what to recall? deja recall <words>")
 	}
+	return recallOptions{q: q, limit: limit, offset: offset, project: project, harness: harness}, nil
+}
+
+// runRecall prints what the MCP recall tool answers: the framed page, budgeted
+// the same way, this project first. `deja search --json` was the only answer
+// an agent could ask for on the command line, and it ran to 1-2 MB, which a
+// harness truncates to nothing; a skill that drives deja through the shell had
+// nothing it could read (#4781).
+func runRecall(dir string, args []string, stdout io.Writer) error {
+	opts, err := parseRecallArgs(args)
+	if err != nil {
+		return err
+	}
+	q, limit, offset, project, harness := opts.q, opts.limit, opts.offset, opts.project, opts.harness
 	if err := checkHarness(&harness); err != nil {
 		return err
 	}
