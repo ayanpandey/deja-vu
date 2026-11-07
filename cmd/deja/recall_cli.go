@@ -98,7 +98,9 @@ func parseRecallArgs(args []string) (recallOptions, error) {
 			if strings.HasPrefix(a, "-") && a != "-" {
 				return recallOptions{}, unknownFlag("recall", a, recallFlags)
 			}
-			terms = append(terms, a)
+			if strings.TrimSpace(a) != "" {
+				terms = append(terms, a)
+			}
 		}
 	}
 	q := strings.TrimSpace(strings.Join(append(terms, rest...), " "))

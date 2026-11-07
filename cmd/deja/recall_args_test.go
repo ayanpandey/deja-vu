@@ -11,33 +11,50 @@ import (
 func TestRecallArgsKeepTheQueryInOrder(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
-		want string
+		want recallOptions
 	}{
-		{[]string{"foo", "--", "--bar"}, "foo --bar"},
-		{[]string{"foo", "baz", "--", "--bar", "qux"}, "foo baz --bar qux"},
-		{[]string{"foo", "--limit", "2", "--", "--bar"}, "foo --bar"},
-		{[]string{"--", "--bar", "", "   ", "baz"}, "--bar baz"},
-		{[]string{"foo", "--", ""}, "foo"},
-		{[]string{"a", "-", "b"}, "a - b"},
+		{[]string{"foo", "--", "--bar"}, recallOptions{q: "foo --bar"}},
+		{[]string{"foo", "baz", "--", "--bar", "qux"}, recallOptions{q: "foo baz --bar qux"}},
+		{[]string{"foo", "--limit", "2", "--", "--bar"}, recallOptions{q: "foo --bar", limit: 2}},
+		{[]string{"--limit", "2", "foo"}, recallOptions{q: "foo", limit: 2}},
+		{[]string{"foo", "--limit=2"}, recallOptions{q: "foo", limit: 2}},
+		{[]string{"--project=x", "foo", "--", "--bar"}, recallOptions{q: "foo --bar", project: "x"}},
+		{[]string{"--harness=claude", "--offset=3", "foo", "--", "-n"}, recallOptions{q: "foo -n", harness: "claude", offset: 3}},
+		{[]string{"--", "--bar", "", "   ", "baz"}, recallOptions{q: "--bar baz"}},
+		{[]string{"foo", "", "   ", "bar"}, recallOptions{q: "foo bar"}},
+		{[]string{"foo", "--", ""}, recallOptions{q: "foo"}},
+		{[]string{"a", "-", "b"}, recallOptions{q: "a - b"}},
 	} {
-		opts, err := parseRecallArgs(tc.args)
+		got, err := parseRecallArgs(tc.args)
 		if err != nil {
 			t.Errorf("recall %q: %v", tc.args, err)
 			continue
 		}
-		if opts.q != tc.want {
-			t.Errorf("recall %q asked for %q, want %q", tc.args, opts.q, tc.want)
+		if got != tc.want {
+			t.Errorf("recall %q parsed %+v, want %+v", tc.args, got, tc.want)
 		}
 	}
 
-	for _, bad := range [][]string{{"-n", "5", "foo"}, {"foo", "-x"}, {"--", ""}, {"--", "   "}} {
-		_, err := parseRecallArgs(bad)
+	for _, tc := range []struct {
+		args []string
+		in   string // text the refusal must contain
+	}{
+		{[]string{"-n", "5", "foo"}, `"-n"`},
+		{[]string{"foo", "-x"}, `"-x"`},
+		{[]string{"foo", "-5"}, `"-5"`},
+		{[]string{"-n=5", "foo"}, `"-n=5"`},
+		{[]string{"--limt", "2", "foo"}, "did you mean --limit"},
+		{[]string{"foo", "--limit"}, "needs a value"},
+		{[]string{"--", ""}, "what to recall"},
+		{[]string{"--", "   "}, "what to recall"},
+	} {
+		_, err := parseRecallArgs(tc.args)
 		if err == nil {
-			t.Errorf("recall %q was accepted", bad)
+			t.Errorf("recall %q was accepted", tc.args)
 			continue
 		}
-		if strings.HasPrefix(bad[0], "-") && bad[0] != "--" && !strings.Contains(err.Error(), bad[0]) {
-			t.Errorf("recall %q: the refusal does not name the flag: %v", bad, err)
+		if !strings.Contains(err.Error(), tc.in) {
+			t.Errorf("recall %q: refusal %q does not contain %q", tc.args, err, tc.in)
 		}
 	}
 }
